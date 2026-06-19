@@ -1,0 +1,7 @@
+---
+- name: Deploy containerized application
+  hosts: debian_vm
+  become: true
+
+  roles:
+    - deploy_app

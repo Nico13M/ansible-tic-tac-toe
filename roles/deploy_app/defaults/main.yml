@@ -1,0 +1,4 @@
+---
+app_image: nico13m/tic-tac-toe-ynov
+app_container_name: tic-tac-toe-app
+app_env: production
