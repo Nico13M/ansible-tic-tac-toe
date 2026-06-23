@@ -1,0 +1,12 @@
+site_name: tic-tac-toe-ynov
+site_description: Documentation de la pipeline GitLab CI/CD et du déploiement de l'application
+site_url: https://example.gitlab.io/tic-tac-toe-ynov/
+
+theme:
+  name: material
+  language: fr
+
+nav:
+  - Accueil: index.md
+  - Architecture: architecture.md
+  - Déploiement: deployment.md
