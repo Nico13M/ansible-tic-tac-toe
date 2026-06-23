@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tic-tac-toe-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tic-tac-toe-app
+  template:
+    metadata:
+      labels:
+        app: tic-tac-toe-app
+    spec:
+      containers:
+        - name: tic-tac-toe-app
+          image: registry.gitlab.com/placeholder/tic-tac-toe-ynov:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: PORT
+              value: "8000"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

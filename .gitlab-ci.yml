@@ -1,0 +1,217 @@
+stages:
+  - plumber
+  - precommit
+  - test
+  - sonar
+  - build
+  - scan
+  - deploy
+  - release
+  - docs
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  GIT_DEPTH: "0"
+  DOCKER_TLS_CERTDIR: ""
+  IMAGE_TAG: "${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+  IMAGE_REF: "$CI_REGISTRY_IMAGE:${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.default_python:
+  image: python:3.12-slim
+  cache:
+    key: pip-cache
+    paths:
+      - .cache/pip
+  before_script:
+    - python -m pip install --upgrade pip
+    - pip install -e ".[dev]"
+
+plumber:conformity:
+  stage: plumber
+  extends: .default_python
+  script:
+    - python scripts/plumber.py .gitlab-ci.yml
+  allow_failure: true
+  artifacts:
+    when: always
+    paths:
+      - plumber-report.txt
+  rules:
+    - when: always
+
+precommit:hooks:
+  stage: precommit
+  extends: .default_python
+  script:
+    - pre-commit run --all-files --show-diff-on-failure
+
+unit:test:
+  stage: test
+  extends: .default_python
+  script:
+    - pytest --cov=tic_tac_toe_ynov --cov-report=xml:coverage.xml --cov-report=term-missing --junitxml=junit.xml
+  artifacts:
+    when: always
+    paths:
+      - coverage.xml
+      - junit.xml
+    reports:
+      junit: junit.xml
+
+sonar:analysis:
+  stage: sonar
+  image: sonarsource/sonar-scanner-cli:latest
+  needs:
+    - job: unit:test
+      artifacts: true
+  script:
+    - |
+      sonar-scanner \
+        -Dsonar.projectKey=${SONAR_PROJECT_KEY:-$CI_PROJECT_PATH_SLUG} \
+        -Dsonar.projectName=${SONAR_PROJECT_NAME:-$CI_PROJECT_NAME} \
+        -Dsonar.host.url=$SONAR_HOST_URL \
+        -Dsonar.token=$SONAR_TOKEN \
+        -Dsonar.sources=tic_tac_toe_ynov \
+        -Dsonar.tests=tests \
+        -Dsonar.python.coverage.reportPaths=coverage.xml \
+        -Dsonar.qualitygate.wait=true \
+        -Dsonar.exclusions=docs/**,k8s/**,scripts/**
+  rules:
+    - if: $CI_COMMIT_BRANCH || $CI_COMMIT_TAG
+
+build:image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - |
+      cat > /kaniko/.docker/config.json <<EOF
+      {
+        "auths": {
+          "$CI_REGISTRY": {
+            "username": "$CI_REGISTRY_USER",
+            "password": "$CI_REGISTRY_PASSWORD"
+          }
+        }
+      }
+      EOF
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --destination "$IMAGE_REF"
+    - printf 'IMAGE_REF=%s\nIMAGE_TAG=%s\n' "$IMAGE_REF" "$IMAGE_TAG" > build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+    paths:
+      - build.env
+  rules:
+    - if: $CI_COMMIT_BRANCH || $CI_COMMIT_TAG
+
+scan:trivy:
+  stage: scan
+  image: aquasec/trivy:0.57.0
+  needs:
+    - job: build:image
+      artifacts: true
+  script:
+    - trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed --username "$CI_REGISTRY_USER" --password "$CI_REGISTRY_PASSWORD" "$IMAGE_REF"
+  rules:
+    - if: $CI_COMMIT_BRANCH || $CI_COMMIT_TAG
+
+deploy:staging:
+  stage: deploy
+  image: bitnami/kubectl:1.30
+  needs:
+    - job: build:image
+      artifacts: true
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG_STAGING_B64" | base64 -d > ~/.kube/config
+  script:
+    - kubectl create namespace "$KUBE_NAMESPACE_STAGING" --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl -n "$KUBE_NAMESPACE_STAGING" apply -f k8s/deployment.yaml -f k8s/service.yaml
+    - kubectl -n "$KUBE_NAMESPACE_STAGING" set image deployment/tic-tac-toe-app tic-tac-toe-app="$IMAGE_REF"
+    - kubectl -n "$KUBE_NAMESPACE_STAGING" set env deployment/tic-tac-toe-app APP_ENV=staging SENTRY_ENVIRONMENT=staging SENTRY_RELEASE="$IMAGE_TAG"
+    - kubectl -n "$KUBE_NAMESPACE_STAGING" rollout status deployment/tic-tac-toe-app --timeout=180s
+  environment:
+    name: staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+release:sentry:staging:
+  stage: release
+  image: getsentry/sentry-cli:2.39.1
+  needs:
+    - job: deploy:staging
+  script:
+    - sentry-cli releases new "$IMAGE_TAG"
+    - sentry-cli releases set-commits "$IMAGE_TAG" --auto
+    - sentry-cli releases finalize "$IMAGE_TAG"
+    - sentry-cli releases deploys "$IMAGE_TAG" new -e staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+release:sentry:production:
+  stage: release
+  image: getsentry/sentry-cli:2.39.1
+  needs:
+    - job: deploy:production
+  script:
+    - sentry-cli releases new "$CI_COMMIT_TAG"
+    - sentry-cli releases set-commits "$CI_COMMIT_TAG" --auto
+    - sentry-cli releases finalize "$CI_COMMIT_TAG"
+    - sentry-cli releases deploys "$CI_COMMIT_TAG" new -e production
+  rules:
+    - if: $CI_COMMIT_TAG
+
+deploy:production:
+  stage: deploy
+  image: bitnami/kubectl:1.30
+  needs:
+    - job: build:image
+      artifacts: true
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG_PROD_B64" | base64 -d > ~/.kube/config
+  script:
+    - kubectl create namespace "$KUBE_NAMESPACE_PROD" --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl -n "$KUBE_NAMESPACE_PROD" apply -f k8s/deployment.yaml -f k8s/service.yaml
+    - kubectl -n "$KUBE_NAMESPACE_PROD" set image deployment/tic-tac-toe-app tic-tac-toe-app="$IMAGE_REF"
+    - kubectl -n "$KUBE_NAMESPACE_PROD" set env deployment/tic-tac-toe-app APP_ENV=production SENTRY_ENVIRONMENT=production SENTRY_RELEASE="$CI_COMMIT_TAG"
+    - kubectl -n "$KUBE_NAMESPACE_PROD" rollout status deployment/tic-tac-toe-app --timeout=180s
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_TAG
+  when: manual
+
+mkdocs:build:
+  stage: docs
+  extends: .default_python
+  script:
+    - mkdocs build --strict --site-dir site
+  artifacts:
+    paths:
+      - site
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+pages:
+  stage: docs
+  image: alpine:3.20
+  needs:
+    - job: mkdocs:build
+      artifacts: true
+  script:
+    - rm -rf public
+    - cp -r site public
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
