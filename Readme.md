@@ -1,17 +1,26 @@
 # tic-tac-toe-ynov
 
 ## Description
-Ce projet implémente un jeu simple de morpion (Tic-Tac-Toe) en Python. Le jeu permet à deux joueurs de jouer à tour de rôle sur une grille 3x3. Le premier joueur à aligner trois de ses symboles (horizontalement, verticalement ou en diagonale) gagne. Si la grille est pleine et qu’aucun joueur n’a aligné trois symboles, la partie se termine par un match nul.
+Ce dépôt sert de base à l'atelier de mise en place d'une pipeline GitLab CI/CD autour d'une application Tic-Tac-Toe en Python.
 
-## Fonctionnalités
-- Jeu à deux joueurs
-- Validation des saisies des joueurs
-- Détection des conditions de victoire et de match nul
-- Option de rejouer à la fin de chaque partie
-- Suivi persistant du score pendant les parties rejouées
+Le projet combine maintenant:
+
+- une logique de jeu testable
+- un petit service HTTP pour le déploiement Kubernetes
+- une image Docker
+- une pipeline GitLab multi-stages
+- des manifests Kubernetes de base
+- une documentation MkDocs publiée via GitLab Pages
+
+## Fonctionnalités applicatives
+- jeu Tic-Tac-Toe avec détection de victoire et de match nul
+- état du jeu exposé via HTTP sur `/api/state`
+- endpoint de santé sur `/healthz`
 
 ## Prérequis
-- Python 3.6 ou version supérieure
+- Python 3.11 ou version supérieure
+- `pip`
+- `pre-commit` pour exécuter les hooks en local
 
 ---
 
@@ -173,11 +182,45 @@ Ce projet utilise le framework `pre-commit` afin de garantir la qualité du code
 - Vérification des fichiers YAML
 - Formatage du code Python avec `black`
 - Analyse statique avec `flake8`
+- Détection de clés privées
 
 Pour installer les hooks :
 
 ```bash
 pre-commit install
+```
+
+Pour exécuter la pile complète localement:
+
+```bash
+python -m pip install -e ".[dev]"
+pre-commit run --all-files
+pytest --cov=tic_tac_toe_ynov --cov-report=xml:coverage.xml
+mkdocs build --strict
+```
+
+## Pipeline GitLab CI/CD
+
+La pipeline est organisée autour des stages suivants:
+
+1. `plumber` pour un contrôle de conformité non bloquant
+2. `precommit` pour le lint, le formatage et la détection de clés privées
+3. `test` pour les tests unitaires et le coverage
+4. `sonar` pour l'analyse SonarQube avec quality gate bloquant
+5. `build` pour la construction et la publication de l'image Docker
+6. `scan` pour le scan Trivy de l'image
+7. `deploy` pour le staging automatique et la production manuelle sur tag
+8. `release` pour la release Sentry associée au commit ou au tag déployé
+9. `docs` pour la génération et la publication MkDocs via GitLab Pages
+
+Les variables à renseigner dans GitLab sont décrites dans [docs/deployment.md](docs/deployment.md).
+
+## Documentation MkDocs
+
+La documentation projet se trouve dans [docs/](docs) et peut être construite localement avec:
+
+```bash
+mkdocs build --strict
 ```
 
 ## Versionnage sémantique
